@@ -30,7 +30,7 @@ toly_physeq <- qza_to_phyloseq(
   metadata = "./miseq_EJ05_Toly_20210801/EJ05_map_TolyOnly.tsv"
   )
 
-sample_data(toly_physeq_NoMn) # check samples
+sample_data(toly_physeq) # check samples
 ```
 
 # Taxonomy tables 
