@@ -75,7 +75,7 @@ toly_sigtab = cbind(as(toly_sigtab, "data.frame"), as(tax_table(toly_physeq_NoMn
 
 head(toly_sigtab) # check
 
-# check ASVs that are significantly enriched in the Zip14KO
+# check OTUs that are significantly enriched in the Zip14KO
 toly_sigtab_zip14ko = toly_sigtab[toly_sigtab[, "log2FoldChange"] > 0, ]
 toly_sigtab_zip14ko = toly_sigtab_zip14ko[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
 
@@ -97,7 +97,7 @@ taxonomy_parse <- taxonomy_parse %>%
 
 # assign otu#
 taxonomy <- taxonomy %>%
-  mutate(ASV_ID = paste0("otu_", 1:nrow(.)))
+  mutate(OTU_ID = paste0("otu_", 1:nrow(.)))
 
 
 deseq_term_res_taxa <- deseq_term_res %>%
