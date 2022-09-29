@@ -1,0 +1,315 @@
+---
+title: "EJ05_Toly_20210801"
+author: "Min-Ting"
+date: "8/1/2021"
+output: html_document
+---
+
+# packages
+```{r}
+library("qiime2R")
+library("ggplot2")
+library("tidyverse")
+library("phyloseq")
+library("DESeq2")
+library("EnhancedVolcano")
+library("ggpubr")
+library("ComplexHeatmap")
+library("OTUtable")
+library("ALDEx2")
+```
+
+
+#Import data_Aydemir lab's
+```{r}
+# make phyloseq project
+toly_physeq <- qza_to_phyloseq(
+  features = "./miseq_EJ05_Toly_20210801/EJ05-table.qza",
+  tree = "./miseq_EJ05_Toly_20210801/EJ05-rooted-tree.qza", 
+  "./miseq_EJ05_Toly_20210801/EJ05-taxonomy.qza",
+  metadata = "./miseq_EJ05_Toly_20210801/EJ05_map_TolyOnly.tsv"
+  )
+
+sample_data(toly_physeq_NoMn) # check samples
+```
+
+# Taxonomy tables 
+```{r}
+# full
+taxonomy <- read_qza("/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_JC01_NICU_20210804/NICU_taxonomy.qza")$data
+
+#parse taxonomy
+taxonomy_parse <- parse_taxonomy(taxonomy)
+```
+
+
+# DESeq2
+```{r}
+# subset to only compare WT vs Zip14KO
+toly_physeq_NoMn <- subset_samples(toly_physeq, AddMnOrNot == "NoMn")
+
+#trim below 500
+toly_physeq_NoMn <- prune_samples(sample_sums(toly_physeq_NoMn) > 500, toly_physeq_NoMn)
+toly_physeq_NoMn
+
+toly_deseq2_NoMn = phyloseq_to_deseq2(toly_physeq_NoMn, ~TreatmentGroup)
+
+
+# calculate geometric means prior to estimate size factors
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(toly_deseq2_NoMn), 1, gm_mean)
+toly_deseq2_NoMn = estimateSizeFactors(toly_deseq2_NoMn, geoMeans = geoMeans)
+toly_deseq2_NoMn = DESeq(toly_deseq2_NoMn, fitType = "local")
+
+resultsNames(toly_deseq2_NoMn) #confirm the comparison
+
+
+toly_res = results(toly_deseq2_NoMn)
+toly_res = toly_res[order(toly_res$padj, na.last = NA), ]
+alpha = 0.01
+toly_sigtab = toly_res[(toly_res$padj < alpha), ]
+
+toly_sigtab = cbind(as(toly_sigtab, "data.frame"), as(tax_table(toly_physeq_NoMn)[rownames(toly_sigtab), ], "matrix"))
+
+head(toly_sigtab) # check
+
+# check ASVs that are significantly enriched in the Zip14KO
+toly_sigtab_zip14ko = toly_sigtab[toly_sigtab[, "log2FoldChange"] > 0, ]
+toly_sigtab_zip14ko = toly_sigtab_zip14ko[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+
+
+#more info 
+mcols(toly_res)$description
+
+toly_res %>%
+  as.data.frame()
+```
+
+# ================================
+# volcano plot
+# ================================
+```{r}
+# 
+taxonomy_parse <- taxonomy_parse %>%
+  rownames_to_column(var = "Feature.ID") 
+
+# assign otu#
+taxonomy <- taxonomy %>%
+  mutate(ASV_ID = paste0("otu_", 1:nrow(.)))
+
+
+deseq_term_res_taxa <- deseq_term_res %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Feature.ID") %>%
+  left_join(taxonomy, by = "Feature.ID")
+
+
+# add parse info
+deseq_term_res_taxa <- deseq_term_res_taxa %>%
+  left_join(taxonomy_parse, by = "Feature.ID")
+
+#add otu#
+toly_res_taxa <- toly_res_taxa %>%
+  left_join(taxonomy[,c(1,5)])
+
+#set number as rownames
+
+toly_res_taxa <- toly_res_taxa %>%
+  column_to_rownames(var = "OTU_ID")
+  
+# ************ PLOT  ************
+EnhancedVolcano(toly_res_taxa,
+    lab = rownames(toly_res_taxa),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    pCutoff = 10e-12,
+    FCcutoff = 2,
+    cutoffLineType = 'twodash',
+    #cutoffLineWidth = 0.8,
+    pointSize = 4.0,
+    labSize = 3.0,
+    colAlpha = 1,
+    legendLabels=c('Not sig.','Log (base 2) FC','p-value',
+      'p-value & Log (base 2) FC'),
+    legendPosition = 'right',
+    legendLabSize = 16,
+    legendIconSize = 5.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.5,
+    maxoverlapsConnectors = Inf)
+
+ggsave(path = "./miseq_EJ05_Toly_20210801/R_plot_20210801",filename = "volcano_ZIPvsWT_2.pdf", height=12, width=10, device="pdf")
+```
+
+# ================================
+# barplot
+# ================================
+```{r}
+# ********** Family **********
+toly_res_taxa %>%
+  filter(padj < 0.01) %>%
+  filter(!is.na(Family)) %>%
+  group_by(Family) %>%
+ggbarplot(x = "Family", y = "log2FoldChange",
+          add = "mean_se",
+          fill = "Phylum", 
+          #color = "white",
+          palette = "Dark2",
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "log2FoldChange",
+          xlab = "Family",
+          rotate = TRUE,
+          )
+
+ggsave(path = "./miseq_EJ05_Toly_20210801/R_plot_20210801",filename = "desq2_ZIPvsWT.pdf", height=6, width=5, device="pdf")
+
+
+# ********** Genus **********
+toly_res_taxa %>%
+  filter(padj < 0.01) %>%
+  filter(!is.na(Genus)) %>%
+  group_by(Genus) %>%
+ggbarplot(x = "Genus", y = "log2FoldChange",
+          add = "mean_se",
+          fill = "Phylum", 
+          #color = "white",
+          palette = "Dark2",
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "log2FoldChange",
+          xlab = "Genus",
+          rotate = TRUE,
+          )
+
+ggsave(path = "/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_EJ05_Toly_20210801/R_plot_20210801",filename = "desq2_ZIPvsWT_genus.pdf", height=6, width=5, device="pdf")
+```
+
+# ==========================================
+# Heatmap- Part1: Prepare row annotation
+# ==========================================
+```{r}
+## read count table
+EJ05_table <- read_qza("/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_EJ05_Toly_20210801/EJ05-table.qza")$data
+toly_table <- EJ05_table[,c(1:23)]
+
+#convert to percentage
+toly_table_perc <- apply(toly_table, 2, function(x) x/sum(x)*100)
+
+# with sample detail
+toly_table_perc <- toly_table_perc %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Feature.ID") %>%
+  left_join(taxonomy[,c(1,2,4)])
+
+toly_table_perc <- toly_table_perc %>%
+  left_join(taxonomy_parse)
+  
+
+#filter by the deseq2 result
+
+toly_table_perc0.01 <- toly_res_taxa[,c(1:7)] %>%
+  left_join(toly_table_perc, by = "Feature.ID") %>%
+  filter(padj < 0.01)
+
+toly_table_perc0.01_simple <- toly_table_perc0.01[,c(8:30,32)]
+
+toly_table_perc0.01_simple <- toly_table_perc0.01_simple %>%
+  column_to_rownames(var = "OTU_ID")
+
+# otu information for annotation
+ann_phylum_toly <- data.frame(toly_table_perc0.01$Phylum)
+colnames(ann_phylum_toly) <- c("Phylum")
+
+#color
+color_phylum_toly <- list("Phylum" = c("Firmicutes" = "#4fc1e8", "Bacteroidetes" = "#ed5564", "Tenericutes" = "#ffce54", "Cyanobacteria" = "#a0d568", "Proteobacteria" = "#ac92eb"))
+
+
+ann_phylum_toly %>%
+  group_by(Phylum) %>%
+  mutate(count = n()) # check count
+
+
+# set row annotation for heatmap
+rowAnn_phylum <- HeatmapAnnotation(df = ann_phylum_toly, which = "row", col = color_phylum_toly, annotation_width = unit(c(1,4), "cm"), gap = unit(1, "mm"))
+
+
+```
+
+# ==========================================
+# Heatmap- Part2: Prepare column annotation
+# ==========================================
+```{r}
+# transpose
+toly_table_perc0.01_simple_t <- toly_table_perc0.01_simple %>%
+  rownames_to_column(var = "OTU_ID") %>%
+  t() %>%
+  as.data.frame()
+
+header.true <- function(df) {
+  names(df) <- as.character(unlist(df[1,]))
+  df[-1,]
+}
+
+toly_table_perc0.01_simple_t <- header.true(toly_table_perc0.01_simple_t)
+
+toly_table_perc0.01_simple_t <- toly_table_perc0.01_simple_t %>%
+  rownames_to_column(var = "SampleID") %>%
+  left_join(meta_toly[,c(1,5:9)])
+
+#filter for only without Mn add
+toly_table_perc0.01_simple_t <- toly_table_perc0.01_simple_t %>%
+  filter(AddMnOrNot == "NoMn")
+
+# annotation for experiment info
+ann_experiment_toly <- data.frame(toly_table_perc0.01_simple_t$TreatmentGroup, toly_table_perc0.01_simple_t$Gender)
+colnames(ann_experiment_toly) <- c("Group", "Gender")
+
+#color
+color_group.gender_toly <- list("Group" = c("WT" = "#143d59", "Zip14KO" = "#f4b41a"), "Gender" = c("Male" = "#5b84b1ff", "Female" = "#fc766aff"))
+
+
+
+# set for col annotation for heatmap
+colAnn_Group <- HeatmapAnnotation(df = ann_experiment_toly, which = "col", col = color_group.gender_toly, annotation_width = unit(c(1,4), "cm"), gap = unit(1, "mm"))
+```
+
+# ==========================================
+# Heatmap- Part3: PLOT
+# ==========================================
+
+```{r}
+# take row z score
+toly_table_perc0.01_simple_z <- zscore(toly_table_perc0.01_simple)
+
+
+# *************** PLOT ***************
+
+pdf(file ="/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_EJ05_Toly_20210801/R_plot_20210801/heatmap_ZIPvsWT_padj001.pdf", height=10, width=15)
+
+Heatmap(toly_table_perc0.01_simple_z[,c(1:4,12,18:23)],
+        name = "zscore_abund",
+        show_row_names = FALSE,
+        top_annotation = colAnn_Group,
+        left_annotation = rowAnn_phylum)
+
+dev.off()
+
+
+```
+
+
+## EXPORT data
+```{r}
+write.csv(toly_res_taxa,"/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_EJ05_Toly_20210801/R_plot_20210801/deseq2_ZIPvsWT_rawTable.csv", row.names = FALSE)
+
+write.csv(toly_table_perc0.01,"/Users/min-tinglee/Desktop/Diet_Lipid_Data/miseq_EJ05_Toly_20210801/R_plot_20210801/deseq2_ZIPvsWT_mergeRel.csv", row.names = FALSE)
+
+```
+
+
+
